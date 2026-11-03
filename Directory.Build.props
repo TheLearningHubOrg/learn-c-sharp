@@ -1,0 +1,13 @@
+<Project>
+
+  <!-- Shared by every project under this folder. MSBuild imports it before each .csproj. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Writes packages.lock.json so CI and Docker restore exactly the same package graph. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+</Project>

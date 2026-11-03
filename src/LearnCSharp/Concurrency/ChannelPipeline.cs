@@ -1,41 +1,60 @@
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using LearnCSharp.Models;
 
 namespace LearnCSharp.Concurrency;
 
+/// <summary>
+/// A bounded producer/consumer pipeline exposed as an async stream. Stage 4 explains
+/// it in depth; the starter uses it to stream the roadmap from /api/roadmap.
+/// </summary>
 public static class ChannelPipeline
 {
-    public static readonly IReadOnlyList<RoadmapStage> DefaultStages = new List<RoadmapStage>
+    public static async IAsyncEnumerable<T> StreamAsync<T>(
+        IEnumerable<T> source,
+        int capacity = 4,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        new(1, "CLR Execution, JIT Compilation & IL Assembly", "Garbage collection generations, value types vs reference types", true),
-        new(2, "Modern C# Syntax, Records & Pattern Matching", "Switch expressions, positional records, primary constructors", true),
-        new(3, "Memory Safety, Span<T>, Memory<T> & ref struct", "Zero-allocation slicing, stackalloc, Unsafe APIs", true),
-        new(4, "Asynchronous Programming & Task<T> Machinery", "AsyncStateMachine, SynchronizationContext, ValueTask<T>", false),
-        new(5, "High-Throughput Concurrency & Channels", "System.Threading.Channels, Lock object, Interlocked primitives", false),
-        new(6, "Reflection, Source Generators & Native AOT", "Compile-time code generation, trimming, self-contained binaries", false),
-        new(7, "Staff .NET Architect Handbook & SRE", "Threadpool starvation, memory dump analysis with dotnet-dump, GC pause tuning", true)
-    };
-
-    public static async IAsyncEnumerable<RoadmapStage> StreamStagesAsync()
-    {
-        var channel = Channel.CreateBounded<RoadmapStage>(new BoundedChannelOptions(10)
+        Channel<T> channel = Channel.CreateBounded<T>(new BoundedChannelOptions(capacity)
         {
-            FullMode = BoundedChannelFullMode.Wait
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = true,
         });
 
-        _ = Task.Run(async () =>
+        // The linked source lets the consumer stop the producer when it leaves early.
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task producer = Task.Run(() => ProduceAsync(source, channel.Writer, stop.Token), CancellationToken.None);
+
+        try
         {
-            foreach (var stage in DefaultStages)
+            await foreach (T item in channel.Reader.ReadAllAsync(cancellationToken))
             {
-                await Task.Delay(20);
-                await channel.Writer.WriteAsync(stage);
+                yield return item;
             }
-            channel.Writer.Complete();
-        });
-
-        await foreach (var item in channel.Reader.ReadAllAsync())
+        }
+        finally
         {
-            yield return item;
+            await stop.CancelAsync();
+            await producer;
+        }
+    }
+
+    private static async Task ProduceAsync<T>(IEnumerable<T> source, ChannelWriter<T> writer, CancellationToken token)
+    {
+        try
+        {
+            foreach (T item in source)
+            {
+                // Waits (without blocking a thread) while the channel is full: backpressure.
+                await writer.WriteAsync(item, token);
+            }
+
+            writer.TryComplete();
+        }
+        catch (Exception ex)
+        {
+            // Completing with the exception makes the reader rethrow it.
+            writer.TryComplete(ex);
         }
     }
 }

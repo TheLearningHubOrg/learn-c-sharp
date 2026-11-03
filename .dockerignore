@@ -1,0 +1,11 @@
+.git
+.github
+**/bin
+**/obj
+**/TestResults
+**/.vs
+tests
+public
+*.md
+Dockerfile
+.dockerignore

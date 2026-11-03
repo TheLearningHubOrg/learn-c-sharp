@@ -1,21 +1,22 @@
-# Multi-stage Dockerfile for C# / .NET 8 Console Application
-FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS builder
+# ASP.NET Core minimal API on .NET 10 (LTS).
+# The aspnet image ships a non-root "app" user. Program.cs reads PORT (default
+# 8080) and binds 0.0.0.0, so EXPOSE 8080 matches APP_PORT in ci.yml.
 
+# ---- build ------------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
+# Restore from the project file and lock file alone so this layer caches between code edits.
+COPY global.json Directory.Build.props ./
+COPY src/LearnCSharp/LearnCSharp.csproj src/LearnCSharp/packages.lock.json src/LearnCSharp/
+RUN dotnet restore src/LearnCSharp/LearnCSharp.csproj --locked-mode
+COPY src/ src/
+RUN dotnet publish src/LearnCSharp/LearnCSharp.csproj -c Release -o /out --no-restore
 
-COPY LearnCSharp.sln ./
-COPY src/LearnCSharp/*.csproj src/LearnCSharp/
-COPY tests/LearnCSharp.Tests/*.csproj tests/LearnCSharp.Tests/
-RUN dotnet restore LearnCSharp.sln
-
-COPY . .
-RUN dotnet build -c Release LearnCSharp.sln
-RUN dotnet test -c Release --no-build
-RUN dotnet publish -c Release -o /app/publish src/LearnCSharp/LearnCSharp.csproj
-
-FROM mcr.microsoft.com/dotnet/runtime:8.0-alpine AS runner
+# ---- runtime ----------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
-
-COPY --from=builder /app/publish .
-
+COPY --from=build /out ./
+ENV PORT=8080
+USER app
+EXPOSE 8080
 ENTRYPOINT ["dotnet", "LearnCSharp.dll"]

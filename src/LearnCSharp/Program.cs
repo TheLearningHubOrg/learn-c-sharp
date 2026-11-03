@@ -1,36 +1,76 @@
+using System.Runtime;
 using System.Runtime.InteropServices;
 using LearnCSharp.Concurrency;
+using LearnCSharp.Curriculum;
 using LearnCSharp.Models;
+using LearnCSharp.Numerics;
+using LearnCSharp.Parsing;
+using LearnCSharp.Serialization;
+using Microsoft.AspNetCore.Http.HttpResults;
 
-Console.WriteLine(new string('=', 70));
-Console.WriteLine("  Learn C# 12 / .NET 8 Systems Architecture Masterclass");
-Console.WriteLine(new string('=', 70));
+var builder = WebApplication.CreateBuilder(args);
 
-Console.WriteLine($"\n[CLR Runtime] .NET Version: {Environment.Version}");
-Console.WriteLine($"[Environment] OS: {RuntimeInformation.OSDescription} ({RuntimeInformation.ProcessArchitecture})");
-Console.WriteLine($"[Garbage Collector] Server GC: {System.Runtime.GCSettings.IsServerGC}, LatencyMode: {System.Runtime.GCSettings.LatencyMode}");
+// One port, read from PORT, bound on every interface so a container can reach it.
+string port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
-Console.WriteLine("\n[Channel Pipeline] Streaming 7-Stage Pedagogical Roadmap:");
-int completedCount = 0;
+// Use the compile-time JSON serializers first; reflection stays as a fallback.
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default));
+builder.Services.AddProblemDetails();
 
-await foreach (var stage in ChannelPipeline.StreamStagesAsync())
+var app = builder.Build();
+
+app.MapGet("/health", () => new HealthReport("ok", RuntimeInformation.FrameworkDescription));
+
+// Stage 1 exercise: report what the runtime knows about itself.
+app.MapGet("/api/runtime", () => new RuntimeInfo(
+    RuntimeInformation.FrameworkDescription,
+    RuntimeInformation.OSDescription,
+    RuntimeInformation.ProcessArchitecture.ToString(),
+    Environment.ProcessorCount,
+    GCSettings.IsServerGC));
+
+// Streams the stages through a bounded channel; the response is written as items arrive.
+app.MapGet("/api/roadmap", (CancellationToken ct) =>
+    ChannelPipeline.StreamAsync(Roadmap.Stages, cancellationToken: ct));
+
+// Stage 2 exercise: LINQ grouping.
+app.MapGet("/api/roadmap/summary", () => RoadmapQueries.SummarizeByLevel(Roadmap.Stages));
+
+app.MapGet("/api/roadmap/{number:int}", Results<Ok<RoadmapStage>, ProblemHttpResult> (int number) =>
+    RoadmapQueries.Find(Roadmap.Stages, number) switch
+    {
+        Result<RoadmapStage>.Success found => TypedResults.Ok(found.Value),
+        Result<RoadmapStage>.Failure missing => TypedResults.Problem(missing.Error, statusCode: StatusCodes.Status404NotFound),
+        _ => throw new InvalidOperationException("Unknown result."),
+    });
+
+app.MapGet("/api/stats", Results<Ok<StatsSummary>, ProblemHttpResult> (string? values) =>
+    NumberListParser.Parse(values).Map(Summarize).Match<Results<Ok<StatsSummary>, ProblemHttpResult>>(
+        summary => TypedResults.Ok(summary),
+        error => TypedResults.Problem(error, statusCode: StatusCodes.Status400BadRequest)));
+
+app.MapGet("/api/endpoint", Results<Ok<NetworkEndpoint>, ProblemHttpResult> (string? uri) =>
+    EndpointParser.Parse(uri) switch
+    {
+        Result<NetworkEndpoint>.Success parsed => TypedResults.Ok(parsed.Value),
+        Result<NetworkEndpoint>.Failure failed => TypedResults.Problem(failed.Error, statusCode: StatusCodes.Status400BadRequest),
+        _ => throw new InvalidOperationException("Unknown result."),
+    });
+
+app.Run();
+
+static StatsSummary Summarize(double[] numbers)
 {
-    var symbol = stage.Completed ? "✓" : "○";
-    if (stage.Completed) completedCount++;
-    Console.WriteLine($"  [{symbol}] Stage {stage.StageNumber}: {stage.Title}");
-    Console.WriteLine($"      Domain: {stage.DomainFocus}");
+    ReadOnlySpan<double> span = numbers;
+    return new StatsSummary(
+        span.Length,
+        Statistics.Sum(span),
+        Statistics.Mean(span),
+        Statistics.Variance(span),
+        Statistics.Median(span));
 }
 
-int total = ChannelPipeline.DefaultStages.Count;
-int percentage = (int)((double)completedCount / total * 100);
-Console.WriteLine($"\n[Curriculum Progress] Mastered: {completedCount} / {total} stages ({percentage}%)");
-
-Result<string> operationResult = new Result<string>.Success("All channels completed without deadlocks.");
-var message = operationResult switch
-{
-    Result<string>.Success s => $"Execution Succeeded: {s.Data}",
-    Result<string>.Failure f => $"Execution Failed: {f.Error}",
-    _ => "Unknown result state"
-};
-
-Console.WriteLine($"\n[Pattern Matching Result] {message}");
+// Makes the implicit Program class visible to WebApplicationFactory in the tests.
+public partial class Program;
